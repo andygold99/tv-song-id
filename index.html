@@ -42,6 +42,7 @@ function setSong(song){
 const RECORD_SECONDS=10, PAUSE_SECONDS=5;
 let autoMode=false, busy=false, wakeLock=null, currentRecorder=null, currentStream=null;
 let waitResolve=null;
+let lastRecognitionError='';
 function setStatus(message){$('status').textContent=message}
 function delay(ms){return new Promise(resolve=>{let timer=setTimeout(()=>{waitResolve=null;resolve()},ms);waitResolve=()=>{clearTimeout(timer);waitResolve=null;resolve()}})}
 function updateButtons(){
@@ -69,7 +70,7 @@ async function recognizeOnce(isAuto=false){
   if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw Error('Microphone unavailable. Use Chrome over HTTPS.');
   stream=await navigator.mediaDevices.getUserMedia({audio:true});currentStream=stream;
   if(isAuto&&!autoMode)return 'stopped';
-  const preferred=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
+  const preferred=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));
   recorder=new MediaRecorder(stream,preferred?{mimeType:preferred}:undefined);currentRecorder=recorder;
   const chunks=[];const recording=new Promise((resolve,reject)=>{recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onerror=e=>reject(e.error||Error('Recording failed'));recorder.onstop=()=>resolve(new Blob(chunks,{type:recorder.mimeType||'audio/webm'}))});
   recorder.start();
@@ -83,13 +84,13 @@ async function recognizeOnce(isAuto=false){
   if(!blob.size)throw Error('No audio was recorded');
   // Release microphone immediately after capturing, before network processing.
   stream.getTracks().forEach(t=>t.stop());currentStream=null;
-  setStatus('Identifying song…');const form=new FormData();form.append('api_token',token);form.append('return','spotify,apple_music');form.append('file',blob,'sample.'+(blob.type.includes('mp4')?'mp4':'webm'));
+  setStatus('Identifying song…');const form=new FormData();form.append('api_token',token);form.append('return','spotify,apple_music');const ext=blob.type.includes('ogg')?'ogg':blob.type.includes('mp4')?'mp4':'webm';form.append('file',blob,'sample.'+ext);
   const response=await fetch('https://api.audd.io/',{method:'POST',body:form});if(!response.ok)throw Error(`Recognition request failed: HTTP ${response.status}`);
   const data=await response.json();if(data.status!=='success'){const err=Error(data.error?.error_message||data.error?.message||'AudD returned an error');err.fatal=/token|balance|credit|quota|limit|payment|unauthori|forbidden/i.test(err.message);throw err}
   if(isAuto&&!autoMode)return 'stopped';
   if(!data.result){setStatus('No match. '+(isAuto?'Auto will retry.':'Try during a clear part of the song.'));return 'no-match'}
   setSong(data.result);setStatus('✓ Song identified'+(isAuto?' · Auto active':''));return 'matched';
- }catch(e){console.error(e);if(!isAuto||autoMode)setStatus(`Error: ${e.message}`);return e.fatal?'fatal-error':'error'}
+ }catch(e){console.error(e);lastRecognitionError=e.message||String(e);if(!isAuto||autoMode)setStatus(`Error: ${lastRecognitionError}`);return e.fatal?'fatal-error':'error'}
  finally{
   if(recorder?.state==='recording')try{recorder.stop()}catch{}
   stream?.getTracks().forEach(t=>t.stop());currentStream=null;currentRecorder=null;
@@ -106,7 +107,7 @@ $('auto').onclick=async()=>{
   const result=await recognizeOnce(true);
   if(!autoMode)break;
   if(result==='fatal-error'||result==='token'){stopAuto('Auto stopped: AudD reported an account or API limit. Check your token and balance.');break}
-  if(result==='error')setStatus('Recognition failed; auto will retry shortly.');
+  if(result==='error'){setStatus(`Auto paused after error: ${lastRecognitionError}. Tap Start Auto to retry.`);stopAuto(`Auto paused after error: ${lastRecognitionError}. Tap Start Auto to retry.`);break}
   for(let i=PAUSE_SECONDS;i>0&&autoMode;i--){setStatus(`Auto active · Next listen in ${i}s`);await delay(1000)}
  }
 };
